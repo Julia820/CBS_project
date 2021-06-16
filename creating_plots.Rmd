@@ -1,0 +1,85 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup}
+library(dplyr)
+library(Seurat)
+library(RColorBrewer)
+library(celldex)
+```
+Work-flow version
+```{r}
+version = 'combat'
+```
+
+Redaing data
+```{r}
+covid_combined <- readRDS(paste("/seurat/covid",version,"seurat3.Rds",
+                                sep ='_'))
+```
+
+```{r}
+covid_combined$Ventilated[is.na(covid_combined$Ventilated)] <- "Healthy"
+covid_combined$Ventilated <- factor(covid_combined$Ventilated, levels = c("Healthy", "NonVent", "ARDS"))
+```
+
+```{r}
+custom_fill_colors = c(RColorBrewer::brewer.pal(6, "Oranges")[2], 
+                       RColorBrewer::brewer.pal(6, "Oranges")[3], 
+                       RColorBrewer::brewer.pal(6, "Oranges")[4],
+                       RColorBrewer::brewer.pal(6, "Oranges")[5],
+                       RColorBrewer::brewer.pal(6, "Blues")[4:6])
+```
+
+
+```{r}
+
+
+png(paste("plots/",version,"/umap_donor.png", sep = ''),height=500,width=600)
+DimPlot(covid_combined, group.by = "Donor.full", pt.size = 0, cols = custom_fill_colors)
+dev.off()
+```
+
+```{r}
+png(paste("plots/",version,"/umap_cell.png", sep=""),height=500,width=600)
+DimPlot(covid_combined, group.by = "cell.type.fine") 
+dev.off()
+```
+
+```{r}
+png(paste("plots/",version,"/cell_proportion_2.png", sep=""),height=400,width=650)
+covid.plot2(covid_combined, meta.include =c("Status", "Donor.full", "orig.ident",
+                                            "Ventilated", "DPS", "DTF", "seurat_clusters"), 
+            custom_fill_colors = custom_fill_colors) +
+  labs(color = "Donor.full", x = "Ventilation/ARDS Status") + 
+  theme(text = element_text(size = 20))
+dev.off()
+```
+
+
+
+```{r }
+png(paste("plots/",version,"/cell_proportion_1.png", sep=""),height=500,width=900)
+covid.plot1(covid_combined,
+            meta.include = c("Status", "Donor.full", "orig.ident", 
+                             "Ventilated", "DPS", "DTF"),
+            custom_fill_colors = custom_fill_colors)+
+  labs(color = "Donor.full", x = "Ventilation/ARDS Status") + 
+  theme(text = element_text(size = 20))
+dev.off()
+```
+
+
+```{r }
+png(paste("plots/",version,"/cell_proportion_3.png", sep=""),height=700,width=700)
+covid.plot3(covid_combined,
+            meta.include = c("Status", "Donor.full", "orig.ident", 
+                             "Ventilated", "DPS", "DTF", "seurat_clusters"),
+            custom_fill_colors = custom_fill_colors)+
+  labs(color = "Donor.full", x = "Ventilation/ARDS Status") + 
+  theme(text = element_text(size = 20))
+dev.off()
+```
+

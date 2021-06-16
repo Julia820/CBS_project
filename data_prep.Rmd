@@ -1,0 +1,237 @@
+---
+title: "data_prep"
+output: html_document
+---
+
+```{r setup}
+library(plyr)
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(EpicTools)
+library(ggpubr)
+library(sva)
+library(RUVSeq)
+library(tidyverse)
+library(SingleR)
+library(SingleCellExperiment)
+library(scRNAseq)
+library(scater)
+```
+
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(devtools)
+})
+```
+
+
+Type of work flow 
+```{r}
+if_do_combat = FALSE
+```
+
+Loading list of genes ones that were differently expressed based on supplementary materials from the paper. 
+```{r }
+gene_names <- read.csv(file = 'genes.csv',  header = FALSE)
+gene_names <- unique(gene_names[,1])
+```
+Loading data
+```{r }
+path = "data/"
+cm.list = paste0(path, list.files(pattern = "*.matrices.rds", path = path))
+
+cm.files <- lapply(cm.list, readRDS)
+names(cm.files) <- sub(path,"",
+                       sub("\\_cell.counts.matrices.rds", "", cm.list))
+```
+
+Pre-processing
+```{r }
+cm.pp <- mapply(EpicPreHS, cm.files, orig.ident = names(cm.files), SIMPLIFY = F)
+covid_combined.emat <- mergeCM(cm.pp, type = "emat")
+```
+Limiting genes to ones that were differently expressed based on supplementary materials from the paper. 
+```{r }
+r<- row.names(covid_combined.emat)
+b  <-gene_names %in% r
+covid_combined.emat <- covid_combined.emat[gene_names[b],]
+```
+Checking for missing data
+```{r }
+rows_missing <- apply(covid_combined.emat, 1, function(x) any(is.na(x)))
+sum(rows_missing)
+```
+No missing data was found
+
+Creating batches
+```{r }
+if (if_do_combat){
+  col <- colnames(covid_combined.emat)
+  col_split <- sapply(col, strsplit, split = ".",  fixed=TRUE)
+  df <- ldply (col_split, data.frame)
+  df <- df[ c(TRUE,FALSE), ]
+  covid_combined.batch <- list(df[,2], df[,1])
+  names(covid_combined.batch) <- c("patient", "cell")
+}
+
+```
+
+
+
+Creating combat object
+```{r }
+if (if_do_combat){
+  mod0 <- model.matrix(~ 1, data = t(covid_combined.emat))
+  covid_combined.combat <- ComBat(
+      dat = covid_combined.emat, 
+      batch = factor(covid_combined.batch$patient), 
+      mod = mod0,
+      par.prior = TRUE,
+      prior.plots = TRUE
+  )
+}
+```
+Creating Seurat object
+```{r}
+if (!if_do_combat){
+  covid_combined <- CreateSeuratObject(counts = covid_combined.emat, min.cells = 10, names.field = 1, names.delim = "\\.")
+}
+
+if (if_do_combat){
+  covid_combined <- CreateSeuratObject(counts = covid_combined.combat, min.cells = 10, names.field = 1, names.delim = "\\.")
+}
+```
+Adding metadata
+```{r }
+covid_metadata <- read_csv("meta_data.csv")
+seurat_metadata <- covid_combined@meta.data
+seurat_metadata <- seurat_metadata[,!(colnames(seurat_metadata)) %in% 
+                                     setdiff(colnames(covid_metadata), "orig.ident")]
+metadata_combined <- merge(seurat_metadata, covid_metadata, by = "orig.ident")
+rownames(metadata_combined) <- rownames(covid_combined@meta.data)
+covid_combined@meta.data <- metadata_combined
+```
+
+```{r}
+covid_combined <- PercentageFeatureSet(covid_combined, pattern = "^MT-", col.name = "percent.mt")
+covid_combined <- PercentageFeatureSet(covid_combined, pattern = "^RPS", col.name = "percent.rps")
+covid_combined <- PercentageFeatureSet(covid_combined, pattern = "^RPL", col.name = "percent.rpl")
+covid_combined <- PercentageFeatureSet(covid_combined, pattern = "^RNA\\d8S5", col.name = "percent.rrna")
+```
+
+Saving VlnPlot for quality check
+```{r }
+png("plots/vln_org.png",height=500,width=900)
+VlnPlot(covid_combined, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0.0)
+dev.off()
+png("plots/vln_prg_2.png",height=500,width=900)
+VlnPlot(covid_combined, features = c( "percent.rps", "percent.rpl", "percent.rrna"), ncol = 3, pt.size = 0.0)
+dev.off()
+```
+
+Additional filtering
+```{r}
+if (!if_do_combat){
+  covid_combined <- subset(covid_combined, subset =  nCount_RNA < 10000 & percent.mt < 18 & percent.mt > 0 & nFeature_RNA < 1200 )
+}
+
+if (if_do_combat){
+  covid_combined <- subset(covid_combined, subset =  nCount_RNA < 10000 & percent.mt < 18 & percent.mt > 0 )
+}
+```
+Save to file for azimuth
+```{r }
+saveRDS(covid_combined, file = "seurat/covid_org.rds")
+```
+
+Normalize and scale
+```{r }
+covid_combined <- NormalizeData(covid_combined)
+covid_combined <- FindVariableFeatures(covid_combined, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(covid_combined)
+covid_combined <- ScaleData(covid_combined, features = all.genes)
+```
+Clustering
+```{r }
+covid_combined <- RunPCA(covid_combined, verbose = FALSE)
+covid_combined <- RunUMAP(covid_combined, dims = 1:50, verbose = FALSE)
+covid_combined <- FindNeighbors(covid_combined, dims = 1:50, verbose = FALSE)
+covid_combined <- FindClusters(covid_combined, resolution = 1, verbose = FALSE)
+```
+Checking cluster quality
+```{r}
+covid_combined.markers <- FindAllMarkers(covid_combined, only.pos = TRUE, min.pct = 0.25)
+covid_combined.markers %>% group_by(cluster)  %>% top_n(n = 10, wt = avg_log2FC)
+
+```
+Saving cluster quality check
+```{r }
+write.csv(covid_combined.markers,"tables/cluster_org_quality.csv", row.names = FALSE)
+```
+
+SingleR annotation
+```{r cell annotation}
+ref <- HumanPrimaryCellAtlasData()
+common <- intersect(rownames(ref), rownames(covid_combined.emat))
+combined.emat.singler <- covid_combined.emat[common,]
+ref <- ref[common,]
+combined.emat.singler.sce <- SingleCellExperiment(assays = list(counts = combined.emat.singler))
+combined.emat.singler.sce <- logNormCounts(combined.emat.singler.sce)
+```
+
+Predicting cell type
+```{r }
+singler.pred <- SingleR(test = combined.emat.singler.sce@assays@data@listData$logcounts, ref = ref, labels = ref$label.main)
+singler.pred <- singler.pred[colnames(covid_combined),]
+table(singler.pred$labels)
+```
+Saving cell type to file
+```{r }
+write.csv(singler.pred[,c('labels','pruned.labels')],"tables/seurat_combat_cell_ad.csv")
+```
+
+Heatmap of cell types
+```{r }
+png("plots/heatmap_org.png",height=500,width=900)
+plotScoreHeatmap(singler.pred)
+dev.off()
+```
+
+Annotating clusters witjh cell types
+```{r }
+singler.results <- merge(data.frame(cell = rownames(singler.pred), singler = singler.pred$labels), 
+                         data.frame(cell = rownames(covid_combined@meta.data), 
+                                    cluster = covid_combined@meta.data$seurat_clusters), 
+                         by = "cell", 
+                         all.y = FALSE)
+singler.results$cell <- NULL
+singler.results$count <- 1
+singler.results <- aggregate(count ~ ., singler.results, FUN = sum)
+singler.final <- singler.results %>% group_by(cluster) %>% top_n(n = 1, wt = count)
+singler.final
+covid_combined$singler <- singler.pred$labels
+```
+
+Saving clusters annotations to a file
+```{r}
+write.csv(singler.results,"tables/seurat_combat_cluster_ad.csv", row.names = FALSE)
+```
+
+
+Adding cell types to Seurat object
+```{r}
+covid_combined$cell.type.fine  <- 'NULL'
+for (row in 1:nrow(singler.final)){
+  covid_combined$cell.type.fine[covid_combined$seurat_clusters == singler.final[row,]$cluster ] <- singler.final[row,]$singler
+}
+
+```
+
+Saving Seurat object for further analyze
+```{r}
+saveRDS(covid_combined, file = "seurat/covid_combat_seurat3.rds")
+```

@@ -1,0 +1,110 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup}
+library(plyr)
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(EpicTools)
+library(ggpubr)
+library(RUVSeq)
+library(tidyverse)
+library(scRNAseq)
+library(scater)
+```
+
+Work-folw set up
+```{r}
+version = 'org'
+custom_fill_colors = c(RColorBrewer::brewer.pal(6, "Oranges")[2], 
+                       RColorBrewer::brewer.pal(6, "Oranges")[3], 
+                       RColorBrewer::brewer.pal(6, "Oranges")[4],
+                       RColorBrewer::brewer.pal(6, "Oranges")[5],
+                       RColorBrewer::brewer.pal(6, "Blues")[4:6])
+```
+
+Reading data
+```{r }
+projected.umap <- readRDS(paste('/azimuth/',version,'/azimuth_umap.Rds', 
+                                sep = ''))
+ object <- readRDS(paste("/seurat/covid_",version,".Rds", sep = ''))
+object <- object[, Cells(projected.umap)]
+object[['umap.proj']] <- projected.umap
+```
+
+
+
+```{r }
+predictions <- read.delim(paste('/azimuth/',version,'/azimuth_pred.tsv',sep=''), row.names = 1)
+object <- AddMetaData(
+	object = object,
+	metadata = predictions)
+```
+
+```{r}
+imputed.assay <- readRDS(paste('/azimuth/',version,'/azimuth_impADT.Rds', 
+                               sep =''))
+object <- object[, Cells(imputed.assay)]
+object[['impADT']] <- imputed.assay
+```
+
+```{r}
+object$Ventilated[grep("^Vent", object$Ventilated)] <- "ARDS"
+object$Ventilated[is.na(object$Ventilated)] <- "Healthy"
+object$Ventilated <- factor(object$Ventilated, levels = c("Healthy", "NonVent", "ARDS"))
+```
+
+
+```{r}
+png(paste("plots/",version,"_azimuth/umap_predicted.celltype_1.png", sep=""),height=500,width=600)
+DimPlot(object, group.by = 'predicted.celltype.l1') 
+dev.off()
+
+```
+
+```{r}
+png(paste("plots/",version,"_azimuth/umap_predicted.celltype_2.png", sep=""),height=500,width=700)
+DimPlot(object, group.by = 'predicted.celltype.l2') 
+dev.off()
+
+```
+
+```{r}
+png(paste("plots/",version,"_azimuth/umap_donor.png", sep=""),height=500,width=600)
+DimPlot(object, group.by = 'Donor.full', pt.size = 0, cols = custom_fill_colors) 
+dev.off()
+```
+Adding metadata 
+```{r}
+orig.ident <- lapply(rownames(predictions),strsplit, split='.',fixed = TRUE)
+orig.ident <- unlist(orig.ident)
+orig.ident <- orig.ident[c(TRUE, FALSE)]
+predictions$orig.ident <- orig.ident
+```
+
+```{r}
+covid_metadata <- read_csv("meta_data.csv")
+covid_metadata$Ventilated[covid_metadata$Ventilated=='N/A'] <- "Healthy"
+predictions_combined <- merge(predictions, covid_metadata, by = "orig.ident")
+```
+
+
+```{r}
+png(paste("plots/",version,"_azimuth/proportion_1.png", sep=""),height=500,width=600)
+azimuth.plots(predictions_combined, covid_metadata, group_by = "Ventilated", cell_type = "predicted.celltype.l1",
+                         custom_fill_colors = custom_fill_colors)
+dev.off()
+```
+
+
+```{r}
+png(paste("plots/",version,"_azimuth/proportion_2.png", sep=""),height=700,width=600)
+azimuth.plots(predictions_combined, covid_metadata, group_by = "Ventilated", 
+              cell_type = "predicted.celltype.l2",
+                         custom_fill_colors = custom_fill_colors)
+dev.off()
+```
+
